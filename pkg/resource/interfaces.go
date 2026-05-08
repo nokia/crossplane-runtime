@@ -65,6 +65,8 @@ type ConnectionSecretWriterTo interface {
 type Manageable interface {
 	SetManagementPolicies(p xpv2.ManagementPolicies)
 	GetManagementPolicies() xpv2.ManagementPolicies
+	SetManagementPoliciesOptions(o xpv2.ManagementPoliciesOptions)
+	GetManagementPoliciesOptions() xpv2.ManagementPoliciesOptions
 }
 
 // An Orphanable resource may specify a DeletionPolicy.

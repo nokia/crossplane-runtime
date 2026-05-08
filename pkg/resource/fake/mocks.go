@@ -162,13 +162,22 @@ func (m *ConnectionSecretWriterTo) GetWriteConnectionSecretToReference() *xpv2.S
 }
 
 // Manageable implements the Manageable interface.
-type Manageable struct{ Policy xpv2.ManagementPolicies }
+type Manageable struct {
+	Policy                    xpv2.ManagementPolicies
+	ManagementPoliciesOptions xpv2.ManagementPoliciesOptions
+}
 
 // SetManagementPolicies sets the ManagementPolicies.
 func (m *Manageable) SetManagementPolicies(p xpv2.ManagementPolicies) { m.Policy = p }
 
 // GetManagementPolicies gets the ManagementPolicies.
 func (m *Manageable) GetManagementPolicies() xpv2.ManagementPolicies { return m.Policy }
+
+// SetManagementPoliciesOptions sets the ManagementPoliciesOptions.
+func (m *Manageable) SetManagementPoliciesOptions(o xpv2.ManagementPoliciesOptions) { m.ManagementPoliciesOptions = o }
+
+// GetManagementPoliciesOptions gets the ManagementPoliciesOptions.
+func (m *Manageable) GetManagementPoliciesOptions() xpv2.ManagementPoliciesOptions { return m.ManagementPoliciesOptions }
 
 // Orphanable implements the Orphanable interface.
 type Orphanable struct{ Policy xpv2.DeletionPolicy }

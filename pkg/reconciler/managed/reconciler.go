@@ -71,6 +71,8 @@ const (
 	errExternalResourceNotExist = "external resource does not exist"
 
 	errManagedNotImplemented = "managed resource does not implement connection details"
+
+	errImportExisting = "import of existing resource is not permitted"
 )
 
 // Event reasons.
@@ -124,6 +126,8 @@ type ManagementPoliciesChecker interface { //nolint:interfacebloat // This has t
 	ShouldUpdate() bool
 	// ShouldDelete returns true if the Delete action is allowed.
 	ShouldDelete() bool
+	// ShouldImport returns true if the managementPolicyOption ImportExistingResources is allowed.
+	ShouldImport() bool
 }
 
 // A reconcileRequestTracker can record which reconcile-request token was last
@@ -960,9 +964,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (resu
 
 	switch mg := managed.(type) {
 	case resource.LegacyManaged:
-		policy = NewLegacyManagementPoliciesResolver(managementPoliciesEnabled, mg.GetManagementPolicies(), mg.GetDeletionPolicy(), WithSupportedManagementPolicies(r.supportedManagementPolicies))
+		policy = NewLegacyManagementPoliciesResolver(managementPoliciesEnabled, mg.GetManagementPolicies(), mg.GetDeletionPolicy(), mg.GetManagementPoliciesOptions(), WithSupportedManagementPolicies(r.supportedManagementPolicies))
 	default:
-		policy = NewManagementPoliciesResolver(managementPoliciesEnabled, managed.GetManagementPolicies(), WithSupportedManagementPolicies(r.supportedManagementPolicies))
+		policy = NewManagementPoliciesResolver(managementPoliciesEnabled, managed.GetManagementPolicies(), mg.GetManagementPoliciesOptions(), WithSupportedManagementPolicies(r.supportedManagementPolicies))
 	}
 
 	// Check if the resource has paused reconciliation based on the
@@ -1204,6 +1208,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (resu
 		return reconcile.Result{Requeue: true}, errors.Wrap(updateStatus(), errUpdateManagedStatus)
 	}
 
+	// If the resource already exists, the ImportExistingResources policy option is not set, and there are no create annotations then
+	// this MR did not create the resource and an error is raised.
+	if observation.ResourceExists && !policy.ShouldImport() && meta.ExternalCreateNotStarted(managed) {
+		log.Debug(errImportExisting)
+		record.Event(managed, event.Warning(reasonCannotCreate, errors.New(errImportExisting)))
+		status.MarkConditions(xpv2.Creating(), xpv2.ReconcileError(errors.New(errImportExisting)))
+		return reconcile.Result{Requeue: false}, errors.Wrap(r.client.Status().Update(ctx, managed), errUpdateManagedStatus)
+	}
 	// If this resource has a non-zero creation grace period we want to wait
 	// for that period to expire before we trust that the resource really
 	// doesn't exist. This is because some external APIs are eventually

@@ -58,6 +58,8 @@ func TestReconciler(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	now := metav1.Now()
+	tt := true
+	tf := false
 
 	cases := map[string]struct {
 		reason string
@@ -2159,6 +2161,113 @@ func TestReconciler(t *testing.T) {
 			},
 			want: want{result: reconcile.Result{RequeueAfter: defaultPollInterval}},
 		},
+		"ManagementPolicyOptionImportExistingCreateSuccessful": {
+			reason: "Successful managed resource creation using management policy option ImportExistingResource: true should trigger a requeue after a short wait.",
+			args: args{
+				m: &fake.Manager{
+					Client: &test.MockClient{
+						MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+							mg := asLegacyManaged(obj, 42)
+							mg.SetManagementPolicies(xpv2.ManagementPolicies{xpv2.ManagementActionObserve, xpv2.ManagementActionCreate, xpv2.ManagementActionDelete})
+							mg.SetManagementPoliciesOptions(xpv2.ManagementPoliciesOptions{
+								Create: xpv2.ManagementPoliciesCreateOptions{
+									ImportExistingResources: &tt,
+								},
+							})
+							return nil
+						}),
+						MockUpdate: test.NewMockUpdateFn(nil),
+						MockStatusUpdate: test.MockSubResourceUpdateFn(func(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
+							want := newLegacyManaged(42)
+							want.SetManagementPolicies(xpv2.ManagementPolicies{xpv2.ManagementActionObserve, xpv2.ManagementActionCreate, xpv2.ManagementActionDelete})
+							want.SetManagementPoliciesOptions(xpv2.ManagementPoliciesOptions{
+								Create: xpv2.ManagementPoliciesCreateOptions{
+									ImportExistingResources: &tt,
+								},
+							})
+							meta.SetExternalCreatePending(want, time.Now())
+							meta.SetExternalCreateSucceeded(want, time.Now())
+							want.SetConditions(xpv2.ReconcileSuccess().WithObservedGeneration(42))
+							want.SetConditions(xpv2.Creating().WithObservedGeneration(42))
+							if diff := cmp.Diff(want, obj, test.EquateConditions(), cmpopts.EquateApproxTime(1*time.Second)); diff != "" {
+								reason := "Successful managed resource creation using management policy option ImportExistingResource: true should trigger a requeue after a short wait."
+								t.Errorf("\nReason: %s\n-want, +got:\n%s", reason, diff)
+							}
+							return nil
+						}),
+					},
+					Scheme: fake.SchemeWith(&fake.LegacyManaged{}),
+				},
+				mg: resource.ManagedKind(fake.GVK(&fake.LegacyManaged{})),
+				o: []ReconcilerOption{
+					WithInitializers(),
+					WithManagementPolicies(),
+					WithReferenceResolver(ReferenceResolverFn(func(_ context.Context, _ resource.Managed) error { return nil })),
+					WithExternalConnector(&NopConnector{}),
+					WithCriticalAnnotationUpdater(CriticalAnnotationUpdateFn(func(_ context.Context, _ client.Object) error { return nil })),
+					WithFinalizer(resource.FinalizerFns{AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil }}),
+				},
+			},
+			want: want{result: reconcile.Result{Requeue: true}},
+		},
+		"ResourceExistsImportExistingError": {
+			reason: "When a resource exists and ImportExistingResource is false an error condition should be raised.",
+			args: args{
+				m: &fake.Manager{
+					Client: &test.MockClient{
+						MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+							mg := asLegacyManaged(obj, 42)
+							mg.SetManagementPolicies(xpv2.ManagementPolicies{xpv2.ManagementActionObserve, xpv2.ManagementActionCreate, xpv2.ManagementActionDelete})
+							mg.SetManagementPoliciesOptions(xpv2.ManagementPoliciesOptions{
+								Create: xpv2.ManagementPoliciesCreateOptions{
+									ImportExistingResources: &tf,
+								},
+							})
+							return nil
+						}),
+						MockStatusUpdate: test.MockSubResourceUpdateFn(func(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
+							want := newLegacyManaged(42)
+							want.SetManagementPolicies(xpv2.ManagementPolicies{xpv2.ManagementActionObserve, xpv2.ManagementActionCreate, xpv2.ManagementActionDelete})
+							want.SetManagementPoliciesOptions(xpv2.ManagementPoliciesOptions{
+								Create: xpv2.ManagementPoliciesCreateOptions{
+									ImportExistingResources: &tf,
+								},
+							})
+							want.SetConditions(xpv2.Creating().WithObservedGeneration(42), xpv2.ReconcileError(errors.New(errImportExisting)).WithObservedGeneration(42).WithObservedGeneration(42))
+							if diff := cmp.Diff(want, obj, test.EquateConditions()); diff != "" {
+								reason := "With MustCreate, a successful managed resource observation with no creation annotations should be reported as an error condition."
+								t.Errorf("\nReason: %s\n-want, +got:\n%s", reason, diff)
+							}
+							return nil
+						}),
+					},
+					Scheme: fake.SchemeWith(&fake.LegacyManaged{}),
+				},
+				mg: resource.ManagedKind(fake.GVK(&fake.LegacyManaged{})),
+				o: []ReconcilerOption{
+					WithInitializers(),
+					WithManagementPolicies(),
+					WithExternalConnector(ExternalConnectorFn(func(_ context.Context, _ resource.Managed) (ExternalClient, error) {
+						c := &ExternalClientFns{
+							ObserveFn: func(_ context.Context, _ resource.Managed) (ExternalObservation, error) {
+								return ExternalObservation{ResourceExists: true}, nil
+							},
+							DisconnectFn: func(_ context.Context) error {
+								return nil
+							},
+						}
+						return c, nil
+					})),
+					withLocalConnectionPublishers(LocalConnectionPublisherFns{
+						PublishConnectionFn: func(_ context.Context, _ resource.LocalConnectionSecretOwner, _ ConnectionDetails) (bool, error) {
+							return false, nil
+						},
+					}),
+					WithFinalizer(resource.FinalizerFns{AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil }}),
+				},
+			},
+			want: want{result: reconcile.Result{Requeue: false}},
+		},
 	}
 
 	for name, tc := range cases {
@@ -2179,8 +2288,9 @@ func TestReconciler(t *testing.T) {
 
 func TestTestLegacyManagementPoliciesResolverIsPaused(t *testing.T) {
 	type args struct {
-		enabled bool
-		policy  xpv2.ManagementPolicies
+		enabled       bool
+		policy        xpv2.ManagementPolicies
+		policyoptions xpv2.ManagementPoliciesOptions
 	}
 
 	cases := map[string]struct {
@@ -2191,31 +2301,34 @@ func TestTestLegacyManagementPoliciesResolverIsPaused(t *testing.T) {
 		"Disabled": {
 			reason: "Should return false if management policies are disabled",
 			args: args{
-				enabled: false,
-				policy:  xpv2.ManagementPolicies{},
+				enabled:       false,
+				policy:        xpv2.ManagementPolicies{},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: false,
 		},
 		"EnabledEmptyPolicies": {
 			reason: "Should return true if the management policies are enabled and empty",
 			args: args{
-				enabled: true,
-				policy:  xpv2.ManagementPolicies{},
+				enabled:       true,
+				policy:        xpv2.ManagementPolicies{},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
 		"EnabledNonEmptyPolicies": {
 			reason: "Should return true if the management policies are enabled and non empty",
 			args: args{
-				enabled: true,
-				policy:  xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				enabled:       true,
+				policy:        xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: false,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.enabled, tc.args.policy, xpv2.DeletionDelete)
+			r := NewLegacyManagementPoliciesResolver(tc.args.enabled, tc.args.policy, xpv2.DeletionDelete, tc.args.policyoptions)
 			if diff := cmp.Diff(tc.want, r.IsPaused()); diff != "" {
 				t.Errorf("\nReason: %s\nIsPaused(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -2225,8 +2338,9 @@ func TestTestLegacyManagementPoliciesResolverIsPaused(t *testing.T) {
 
 func TestLegacyManagementPoliciesResolverValidate(t *testing.T) {
 	type args struct {
-		enabled bool
-		policy  xpv2.ManagementPolicies
+		enabled       bool
+		policy        xpv2.ManagementPolicies
+		policyoptions xpv2.ManagementPoliciesOptions
 	}
 
 	cases := map[string]struct {
@@ -2237,47 +2351,52 @@ func TestLegacyManagementPoliciesResolverValidate(t *testing.T) {
 		"Enabled": {
 			reason: "Should return nil if the management policy is enabled.",
 			args: args{
-				enabled: true,
-				policy:  xpv2.ManagementPolicies{},
+				enabled:       true,
+				policy:        xpv2.ManagementPolicies{},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: nil,
 		},
 		"DisabledNonDefault": {
 			reason: "Should return error if the management policy is non-default and disabled.",
 			args: args{
-				enabled: false,
-				policy:  xpv2.ManagementPolicies{xpv2.ManagementActionCreate},
+				enabled:       false,
+				policy:        xpv2.ManagementPolicies{xpv2.ManagementActionCreate},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: fmt.Errorf(errFmtManagementPolicyNonDefault, []xpv2.ManagementAction{xpv2.ManagementActionCreate}),
 		},
 		"DisabledDefault": {
 			reason: "Should return nil if the management policy is default and disabled.",
 			args: args{
-				enabled: false,
-				policy:  xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				enabled:       false,
+				policy:        xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: nil,
 		},
 		"EnabledSupported": {
 			reason: "Should return nil if the management policy is supported.",
 			args: args{
-				enabled: true,
-				policy:  xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				enabled:       true,
+				policy:        xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: nil,
 		},
 		"EnabledNotSupported": {
 			reason: "Should return err if the management policy is not supported.",
 			args: args{
-				enabled: true,
-				policy:  xpv2.ManagementPolicies{xpv2.ManagementActionDelete},
+				enabled:       true,
+				policy:        xpv2.ManagementPolicies{xpv2.ManagementActionDelete},
+				policyoptions: xpv2.ManagementPoliciesOptions{},
 			},
 			want: fmt.Errorf(errFmtManagementPolicyNotSupported, []xpv2.ManagementAction{xpv2.ManagementActionDelete}),
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.enabled, tc.args.policy, xpv2.DeletionDelete)
+			r := NewLegacyManagementPoliciesResolver(tc.args.enabled, tc.args.policy, xpv2.DeletionDelete, tc.args.policyoptions)
 			if diff := cmp.Diff(tc.want, r.Validate(), test.EquateErrors()); diff != "" {
 				t.Errorf("\nReason: %s\nIsNonDefault(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -2289,6 +2408,7 @@ func TestLegacyManagementPoliciesResolverShouldCreate(t *testing.T) {
 	type args struct {
 		managementPoliciesEnabled bool
 		policy                    xpv2.ManagementPolicies
+		policyoptions             xpv2.ManagementPoliciesOptions
 	}
 
 	cases := map[string]struct {
@@ -2308,6 +2428,7 @@ func TestLegacyManagementPoliciesResolverShouldCreate(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionCreate},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2316,6 +2437,7 @@ func TestLegacyManagementPoliciesResolverShouldCreate(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2324,13 +2446,14 @@ func TestLegacyManagementPoliciesResolverShouldCreate(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionObserve},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: false,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan)
+			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan, tc.args.policyoptions)
 			if diff := cmp.Diff(tc.want, r.ShouldCreate()); diff != "" {
 				t.Errorf("\nReason: %s\nShouldCreate(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -2342,6 +2465,7 @@ func TestLegacyManagementPoliciesResolverShouldUpdate(t *testing.T) {
 	type args struct {
 		managementPoliciesEnabled bool
 		policy                    xpv2.ManagementPolicies
+		policyoptions             xpv2.ManagementPoliciesOptions
 	}
 
 	cases := map[string]struct {
@@ -2361,6 +2485,7 @@ func TestLegacyManagementPoliciesResolverShouldUpdate(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionUpdate},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2369,6 +2494,7 @@ func TestLegacyManagementPoliciesResolverShouldUpdate(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2377,13 +2503,14 @@ func TestLegacyManagementPoliciesResolverShouldUpdate(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionObserve},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: false,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan)
+			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan, tc.args.policyoptions)
 			if diff := cmp.Diff(tc.want, r.ShouldUpdate()); diff != "" {
 				t.Errorf("\nReason: %s\nShouldUpdate(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -2395,6 +2522,7 @@ func TestLegacyManagementPoliciesResolverShouldLateInitialize(t *testing.T) {
 	type args struct {
 		managementPoliciesEnabled bool
 		policy                    xpv2.ManagementPolicies
+		policyoptions             xpv2.ManagementPoliciesOptions
 	}
 
 	cases := map[string]struct {
@@ -2414,6 +2542,7 @@ func TestLegacyManagementPoliciesResolverShouldLateInitialize(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionLateInitialize},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2422,6 +2551,7 @@ func TestLegacyManagementPoliciesResolverShouldLateInitialize(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionAll},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2430,13 +2560,14 @@ func TestLegacyManagementPoliciesResolverShouldLateInitialize(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionObserve},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: false,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan)
+			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan, tc.args.policyoptions)
 			if diff := cmp.Diff(tc.want, r.ShouldLateInitialize()); diff != "" {
 				t.Errorf("\nReason: %s\nShouldLateInitialize(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -2448,6 +2579,7 @@ func TestLegacyManagementPoliciesResolverOnlyObserve(t *testing.T) {
 	type args struct {
 		managementPoliciesEnabled bool
 		policy                    xpv2.ManagementPolicies
+		policyoptions             xpv2.ManagementPoliciesOptions
 	}
 
 	cases := map[string]struct {
@@ -2467,6 +2599,7 @@ func TestLegacyManagementPoliciesResolverOnlyObserve(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionObserve},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: true,
 		},
@@ -2475,13 +2608,14 @@ func TestLegacyManagementPoliciesResolverOnlyObserve(t *testing.T) {
 			args: args{
 				managementPoliciesEnabled: true,
 				policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionLateInitialize, xpv2.ManagementActionObserve},
+				policyoptions:             xpv2.ManagementPoliciesOptions{},
 			},
 			want: false,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan)
+			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.policy, xpv2.DeletionOrphan, tc.args.policyoptions)
 			if diff := cmp.Diff(tc.want, r.ShouldOnlyObserve()); diff != "" {
 				t.Errorf("\nReason: %s\nShouldOnlyObserve(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -2498,7 +2632,7 @@ func TestLegacyShouldDelete(t *testing.T) {
 	type want struct {
 		delete bool
 	}
-
+	tt := true
 	cases := map[string]struct {
 		reason string
 		args   args
@@ -2573,6 +2707,23 @@ func TestLegacyShouldDelete(t *testing.T) {
 			},
 			want: want{delete: true},
 		},
+		"DeleteionDeleteManagementActionDeleteWithOrphan": {
+			reason: "Should delete if management policies are enabled and management policy has action Delete.",
+			args: args{
+				managementPoliciesEnabled: true,
+				managed: &fake.LegacyManaged{
+					Manageable: fake.Manageable{
+						Policy:                    xpv2.ManagementPolicies{xpv2.ManagementActionDelete},
+						ManagementPoliciesOptions: xpv2.ManagementPoliciesOptions{Delete: xpv2.ManagementPoliciesDeleteOptions{OrphanResources: &tt}},
+					},
+					Orphanable: fake.Orphanable{
+						Policy: xpv2.DeletionDelete,
+					},
+				},
+			},
+			want: want{delete: false},
+		},
+
 		"DeletionOrphanManagementActionDelete": {
 			reason: "Should delete if management policies are enabled and deletion policy is set to Orphan and management policy has action Delete.",
 			args: args{
@@ -2606,7 +2757,7 @@ func TestLegacyShouldDelete(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.managed.GetManagementPolicies(), tc.args.managed.GetDeletionPolicy())
+			r := NewLegacyManagementPoliciesResolver(tc.args.managementPoliciesEnabled, tc.args.managed.GetManagementPolicies(), tc.args.managed.GetDeletionPolicy(), tc.args.managed.GetManagementPoliciesOptions())
 			if diff := cmp.Diff(tc.want.delete, r.ShouldDelete()); diff != "" {
 				t.Errorf("\nReason: %s\nShouldDelete(...): -want, +got:\n%s", tc.reason, diff)
 			}

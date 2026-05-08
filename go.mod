@@ -34,6 +34,8 @@ require (
 	sigs.k8s.io/yaml v1.6.0
 )
 
+replace github.com/crossplane/crossplane/apis/v2 => /Users/bhaddlet/git/nokia/crossplane/apis
+
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/Azure/azure-sdk-for-go v68.0.0+incompatible // indirect

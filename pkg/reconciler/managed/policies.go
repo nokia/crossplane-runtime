@@ -26,9 +26,10 @@ import (
 // ManagementPoliciesResolver is used to perform management policy checks
 // based on the management policy and if the management policy feature is enabled.
 type ManagementPoliciesResolver struct {
-	enabled            bool
-	supportedPolicies  []sets.Set[xpv2.ManagementAction]
-	managementPolicies sets.Set[xpv2.ManagementAction]
+	enabled                   bool
+	supportedPolicies         []sets.Set[xpv2.ManagementAction]
+	managementPolicies        sets.Set[xpv2.ManagementAction]
+	managementPoliciesOptions xpv2.ManagementPoliciesOptions
 }
 
 // LegacyManagementPoliciesResolver is used to perform management policy checks
@@ -112,11 +113,12 @@ func defaultSupportedManagementPolicies() []sets.Set[xpv2.ManagementAction] {
 // NewManagementPoliciesResolver returns an ManagementPolicyChecker based
 // on the management policies and if the management policies feature
 // is enabled.
-func NewManagementPoliciesResolver(managementPolicyEnabled bool, managementPolicy xpv2.ManagementPolicies, o ...ManagementPoliciesResolverOption) ManagementPoliciesChecker {
+func NewManagementPoliciesResolver(managementPolicyEnabled bool, managementPolicy xpv2.ManagementPolicies, mpo xpv2.ManagementPoliciesOptions, o ...ManagementPoliciesResolverOption) ManagementPoliciesChecker {
 	r := &ManagementPoliciesResolver{
-		enabled:            managementPolicyEnabled,
-		supportedPolicies:  defaultSupportedManagementPolicies(),
-		managementPolicies: sets.New[xpv2.ManagementAction](managementPolicy...),
+		enabled:                   managementPolicyEnabled,
+		supportedPolicies:         defaultSupportedManagementPolicies(),
+		managementPolicies:        sets.New[xpv2.ManagementAction](managementPolicy...),
+		managementPoliciesOptions: mpo,
 	}
 
 	for _, ro := range o {
@@ -132,11 +134,12 @@ func NewManagementPoliciesResolver(managementPolicyEnabled bool, managementPolic
 //
 // Deprecated: this is intended for LegacyManaged resources that had deletionPolicy
 // ModernManaged resources should use NewManagementPoliciesResolver.
-func NewLegacyManagementPoliciesResolver(managementPolicyEnabled bool, managementPolicy xpv2.ManagementPolicies, deletionPolicy xpv2.DeletionPolicy, o ...ManagementPoliciesResolverOption) ManagementPoliciesChecker {
+func NewLegacyManagementPoliciesResolver(managementPolicyEnabled bool, managementPolicy xpv2.ManagementPolicies, deletionPolicy xpv2.DeletionPolicy, mpo xpv2.ManagementPoliciesOptions, o ...ManagementPoliciesResolverOption) ManagementPoliciesChecker {
 	r := &ManagementPoliciesResolver{
-		enabled:            managementPolicyEnabled,
-		supportedPolicies:  defaultSupportedManagementPolicies(),
-		managementPolicies: sets.New[xpv2.ManagementAction](managementPolicy...),
+		enabled:                   managementPolicyEnabled,
+		supportedPolicies:         defaultSupportedManagementPolicies(),
+		managementPolicies:        sets.New[xpv2.ManagementAction](managementPolicy...),
+		managementPoliciesOptions: mpo,
 	}
 
 	for _, ro := range o {
@@ -231,7 +234,13 @@ func (m *ManagementPoliciesResolver) ShouldDelete() bool {
 		return true
 	}
 
-	return m.managementPolicies.HasAny(xpv2.ManagementActionDelete, xpv2.ManagementActionAll)
+	if m.managementPolicies.HasAny(xpv2.ManagementActionDelete, xpv2.ManagementActionAll) {
+		if m.managementPoliciesOptions.Delete.OrphanResources != nil {
+			return !*m.managementPoliciesOptions.Delete.OrphanResources
+		}
+		return true
+	}
+	return false
 }
 
 // ShouldDelete returns true based on the combination of the deletionPolicy and
@@ -250,6 +259,9 @@ func (m *LegacyManagementPoliciesResolver) ShouldDelete() bool {
 	// delete external resource if both the deletionPolicy and the
 	// managementPolicies are set to delete
 	if m.deletionPolicy == xpv2.DeletionDelete && m.managementPolicies.HasAny(xpv2.ManagementActionDelete, xpv2.ManagementActionAll) {
+		if m.managementPoliciesOptions.Delete.OrphanResources != nil {
+			return !*m.managementPoliciesOptions.Delete.OrphanResources
+		}
 		return true
 	}
 	// if the managementPolicies is not default, and it contains the deletion
@@ -265,5 +277,35 @@ func (m *LegacyManagementPoliciesResolver) ShouldDelete() bool {
 	// DeletionOrphan && Management Policy ["*"] (obeys non-default configuration)
 	// DeletionDelete && ManagementPolicies that does not include the Delete
 	// Action (obeys non-default configuration)
+	return false
+}
+
+// ShouldImport returns true if the Create action is required.  If the resource already exists an error will
+// be raised in the reconciler.
+// If the management policy feature is disabled, it returns false.
+func (m *ManagementPoliciesResolver) ShouldImport() bool {
+	if m.managementPoliciesOptions.Create.ImportExistingResources != nil {
+		return *m.managementPoliciesOptions.Create.ImportExistingResources
+	}
+	return true
+}
+
+// ShouldImport returns true if the Create action is required.  If the resource already exists an error will
+// be raised in the reconciler.
+// If the management policy feature is disabled, it returns false.
+func (m *LegacyManagementPoliciesResolver) ShouldImport() bool {
+	if m.managementPoliciesOptions.Create.ImportExistingResources != nil {
+		return *m.managementPoliciesOptions.Create.ImportExistingResources
+	}
+	return true
+}
+
+// ShouldOrphan returns true if the Create action is required.  If the resource already exists an error will
+// be raised in the reconciler.
+// If the management policy feature is disabled, it returns false.
+func (m *ManagementPoliciesResolver) ShouldOrphan() bool {
+	if m.managementPoliciesOptions.Delete.OrphanResources != nil {
+		return *m.managementPoliciesOptions.Delete.OrphanResources
+	}
 	return false
 }
